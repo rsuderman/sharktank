@@ -314,7 +314,7 @@ class GenerateState(BatchGenerateState):
             prefill_seq_lens_host,
             prefill_seq_lens_device,
         ) = resources.acquire_transfer_buffer(service.prefill_seq_lens_pool).h2d_array(
-            cb, [bs], HalElementType.SINT_64, fill_value=0
+            cb, [bs], HalElementType.SINT_64, fill_value=1
         )
 
         # attn_block_indices: array([bs, max_attn_blocks], np.in16)
@@ -454,13 +454,12 @@ class GenerateState(BatchGenerateState):
 
             tok = seq.decode_token_ids[0]
             seq_len = len(seq.current_token_ids)
-            print(seq.current_token_ids)
             seq.current_token_ids.append(tok)
             seq.decode_token_ids = seq.decode_token_ids[1:]
 
             decode_tokens_host[i, 0] = tok
             decode_start_pos_host[i] = seq_len
-            decode_seq_lens_host[i] = seq_len
+            decode_seq_lens_host[i] = seq_len + 1
             for j in range(len(seq.attn_blocks)):
                 decode_attn_block_indices_host[i, j] = attn_blocks[j].index
 

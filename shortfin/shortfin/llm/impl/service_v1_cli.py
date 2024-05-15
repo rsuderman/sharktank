@@ -69,10 +69,10 @@ async def main(argv):
     parser.add_argument("--gguf", help="gguf file containing modle coefficients")
     parsed = parser.parse_args(argv)
 
-    hf_path = parsed.tokenizer
-    config_path = parsed.config
-    vmfb_path = parsed.vmfb
-    gguf_path = parsed.gguf
+    hf_path = "openlm-research/open_llama_3b_v2" # parsed.tokenizer
+    config_path = "/tmp/batch_llama_v1.json" # parsed.config
+    vmfb_path = "/tmp/batch_llama_v1.vmfb" # parsed.vmfb
+    gguf_path = "/media/rsuderman/Disk2/Models/llama.gguf" # parsed.gguf
 
     service = setup(vmfb_path, config_path, gguf_path)
     tokenizer = LlamaTokenizer.from_pretrained(hf_path)
@@ -90,7 +90,18 @@ async def main(argv):
         logits = await state.prefill()
 
         mapped_logits = map_buffer(logits.value)
-        print(mapped_logits)
+        top_tokens = numpy.argmax(mapped_logits, axis=-1)[:, -1].tolist()
+        print(top_tokens)
+        print(tokenizer.decode(top_tokens))
+
+        await state.set_decode_step(top_tokens[:1])
+        result = await state.decode()
+        mapped_result = map_buffer(result.value)
+        top_tokens = numpy.argmax(mapped_result, axis=-1)
+        top_tokens = top_tokens[:, 0].tolist()
+        print(top_tokens)
+        print(tokenizer.decode(top_tokens))
+
         await state.recycle()
 
     service.shutdown()

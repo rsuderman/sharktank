@@ -301,12 +301,16 @@ class PagedKVCache(BaseKVCache):
             page_offset = position % self.block_seq_stride
             for partition_index in range(self.cache_partition_count):
                 cache_partition = cache_partitions[partition_index]
-                indices = (
-                    page_id,
-                    torch.tensor([transformer_block_index], device=device),
-                    torch.tensor([partition_index], device=device),
-                    page_offset.unsqueeze(0),
-                )
+                d0 = page_id
+                d1 = torch.tensor([transformer_block_index], device=device)
+                d2 = torch.tensor([partition_index], device=device)
+                d3 = page_offset.unsqueeze(0)
+                import shark_turbine.ops.iree as iree_ops
+
+                iree_ops.trace_tensor(f"page_{transformer_block_index}_{partition_index}_d0", d0)
+                iree_ops.trace_tensor(f"page_{transformer_block_index}_{partition_index}_d3", d3)
+
+                indices = (d0, d1, d2, d3)
                 page_table.index_put_(indices=indices, values=cache_partition[i, 0])
 
     def write(
