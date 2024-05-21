@@ -73,14 +73,14 @@ class GenerateServiceV1(BatchGenerateService):
             )
 
         # Initialize decode entry-points (1 per batch size).
-        self.decode_functions: dict[int, VmFunction] = {}
-        for bs in self.batch_sizes:
-            assert bs not in self.decode_functions
-            symbol_name = f"decode_bs{bs}"
-            logger.info("Looking up symbol '%s'", symbol_name)
-            self.decode_functions[bs] = self.module_set.function(
-                module_name, symbol_name
-            )
+        # self.decode_functions: dict[int, VmFunction] = {}
+        # for bs in self.batch_sizes:
+        #     assert bs not in self.decode_functions
+        #     symbol_name = f"decode_bs{bs}"
+        #     logger.info("Looking up symbol '%s'", symbol_name)
+        #     self.decode_functions[bs] = self.module_set.function(
+        #         module_name, symbol_name
+        #     )
 
         self._initialize_transfer_pools()
 
@@ -265,7 +265,7 @@ class GenerateState(BatchGenerateState):
         for allowed_bs in service.batch_sizes:
             if allowed_bs >= bs:
                 self._prefill_function = service.prefill_functions[allowed_bs]
-                self._decode_function = service.decode_functions[allowed_bs]
+                # self._decode_function = service.decode_functions[allowed_bs]
                 break
         else:
             raise AssertionError(f"Unsupported batch size: {bs}")

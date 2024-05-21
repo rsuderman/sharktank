@@ -38,7 +38,9 @@ def main():
     dataset = cli.get_input_dataset(args)
 
     hp = configs.LlamaHParams.from_gguf_props(dataset.properties)
-    model = PagedLlamaModelV1(dataset.root_theta, LlamaModelConfig(hp))
+    hp.block_count = 1
+    config = LlamaModelConfig(hp)
+    model = PagedLlamaModelV1(dataset.root_theta, config)
 
     def generate_params_json(hp, prefill_bs: list[int], decode_bs: list[int]):
         return {
@@ -150,7 +152,7 @@ def main():
         4,
     ]:
         generate_batch_prefill(bs)
-        generate_batch_decode(bs)
+        # generate_batch_decode(bs)
         bsizes.append(bs)
     config = generate_params_json(hp, bsizes, bsizes)
     print("GENERATED!")

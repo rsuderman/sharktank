@@ -13,6 +13,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from iree.turbine import ops as iree_ops
+
 from ...layers import *
 from ...types import *
 
@@ -164,6 +166,7 @@ class PagedLlamaModelV1(BaseCausalLMModel):
         self._assert_device(*cache_state, dtype=self.activation_dtype)
         h = self.token_embedding(tokens)
         self.trace_tensor("llama.token_embedding", h)
+        iree_ops.iree.trace_tensor("block_ids", seq_block_ids)
 
         # Iterate over attention blocks.
         for block_idx, block in enumerate(self.attn_blocks):
@@ -178,6 +181,7 @@ class PagedLlamaModelV1(BaseCausalLMModel):
                 seq_block_ids=seq_block_ids,
             )
             self.trace_tensor(f"llama.attn_block.{block_idx}.output", h)
+        return h
 
         h = self.output_norm(h)
         logits = self.output_lm_head(h)
@@ -250,6 +254,8 @@ class PagedLlamaModelV1(BaseCausalLMModel):
                 xv_temp=xv_temp,
             )
             self.trace_tensor(f"llama.attn_block.{block_idx}.output", h)
+
+        return h
 
         h = self.output_norm(h)
         logits = self.output_lm_head(h)
@@ -360,6 +366,8 @@ class PagedLlamaAttentionBlock(ThetaLayer):
             )
         else:
             raise NotImplementedError(f"Unsupported KV cache type: {type(self.cache)}")
+
+        return xk
 
         # Expand kv heads for GQA.
         gqa_n_rep = self.head_count // self.head_count_kv

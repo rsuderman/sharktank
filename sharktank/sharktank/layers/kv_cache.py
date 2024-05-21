@@ -16,6 +16,7 @@ from typing import Optional
 import abc
 import math
 
+from iree.turbine import ops as iree_ops
 import torch
 
 from ..utils.debugging import trace_tensor
@@ -360,9 +361,12 @@ class PagedKVCache(BaseKVCache):
             # index into the sub-pages, we flatten to do a linear index_select
             # copy of the sub-blocks by collapsing the first two dims so we have
             # a linear list.
+            subblock_ids = subblock_ids.flatten(0, 1)
+            iree_ops.iree.trace_tensor(f"indices_{index}", subblock_ids)
             subblock_table.index_copy_(
-                0, subblock_ids.flatten(0, 1), part_block_view.flatten(0, 1)
+                0, subblock_ids, torch.ones_like(part_block_view.flatten(0, 1))
             )
+            # iree_ops.iree.trace_tensor(f"results_{index}", subblock_table)
 
         for index, partition in enumerate(cache_partitions):
             write_cache_partition(index, partition)

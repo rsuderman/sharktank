@@ -42,7 +42,7 @@ def setup(vmfb_path, config_path, gguf_path):
     )
 
     disable_leak_checker()
-    session = DeviceSession(uri="local-task", queue_count=2)
+    session = DeviceSession(uri="local-sync", queue_count=2)
     attn_block_cache = AttnBlockCache(session, cache_params)
 
     lms = session.create_module_set(model_params.module_name, context_count=1)
@@ -90,7 +90,12 @@ async def main(argv):
         logits = await state.prefill()
 
         mapped_logits = map_buffer(logits.value)
-        print(mapped_logits)
+        print(numpy.min(mapped_logits), numpy.max(mapped_logits))
+        # top_tokens = numpy.argmax(mapped_logits, axis=-1)
+        # print(top_tokens)
+        cache = service.cache.attn_block_buffer_view
+        mapped_cache = map_buffer(cache)
+        print(numpy.max(mapped_cache * mapped_cache))
         await state.recycle()
 
     service.shutdown()
