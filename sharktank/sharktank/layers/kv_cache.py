@@ -293,6 +293,32 @@ class PagedKVCache(BaseKVCache):
         page_table = self.unflatten_page_table(state)  # 6D
         bs, *_ = seq_positions.shape
         assert len(cache_partitions) == self.cache_partition_count
+
+        partition_count = len(cache_partitions)
+
+        # [bs, partitions, atten_head_count, attn_head_dim]
+        cache_partitions = torch.concat(cache_partitions, dim=1).flatten(0, 1)
+        
+        # [bs, 1]
+        this_page_index = seq_positions // self.block_seq_stride
+
+        this_page_id = torch.gather(page_ids, dim=1, index=this_page_index.unsqueeze(1))
+        this_page_offset = (seq_positions % self.block_seq_stride).unsqueeze(1)
+
+        # [1, partitions]
+        this_partitions = torch.arange(0, self.cache_partition_count).unsqueeze(0)
+
+        # [bs, partitions]
+        this_page_id = this_page_id.repeat(1, partition_count)
+        this_transformer_block = torch.full((bs, partition_count), transformer_block_index, device=device)
+        this_page_offset = this_page_offset.repeat(1, partition_count)
+        this_partitions = this_partitions.repeat(bs, 1)
+
+        indices = (this_page_id, this_transformer_block, this_partitions, this_page_offset)
+        page_table.index_put_(indices=indices, values=cache_partitions)
+
+        return
+
         for i in range(bs):
             position = seq_positions[i]
             # TODO: Let's clamp to the allowable range so that we don't need

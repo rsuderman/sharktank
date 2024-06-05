@@ -250,6 +250,7 @@ class PagedLlamaModelV1(BaseCausalLMModel):
                 xv_temp=xv_temp,
             )
             self.trace_tensor(f"llama.attn_block.{block_idx}.output", h)
+            break
 
         h = self.output_norm(h)
         logits = self.output_lm_head(h)
