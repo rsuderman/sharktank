@@ -11,6 +11,8 @@ from typing import Optional
 import math
 import sys
 
+import numpy
+import os
 import torch
 
 from ..layers import *
@@ -201,6 +203,40 @@ class Batch:
         rows = [r + (max_length - len(r)) * [0] for r in self.seq_block_ids]
         return torch.tensor(rows, device=self.parent.model.device)
 
+def load_baseline(basedir, hp):
+    baseline = {}
+    files = os.listdir(basedir) if basedir else []
+
+    def load(filename):
+        if filename not in files:
+            return None
+        fp = os.path.join(basedir, filename)
+        with open(fp, 'rb') as f:
+            contents = f.read()
+        dtype = numpy.float32 if "f32" in fp else numpy.float16
+        return numpy.frombuffer(contents, dtype=dtype)
+
+    baseline["inp_embd"] = load("inp_embd_1_f32.bin")
+    baseline["result_norm"] = load("result_norm_1_f32.bin")
+    baseline["result_output"] = load("result_output_1_f32.bin")
+
+    def load_attention(id):
+        attn_dict = {}
+        attn_dict["ffn_up"] = load(f"ffn_up-{id}_1_f32.bin")
+        attn_dict["ffn_gate"] = load(f"ffn_gate-{id}_1_f32.bin")
+        attn_dict["ffn_silu"] = load(f"ffn_silu-{id}_1_f32.bin")
+        attn_dict["ffn_inp"] = load(f"ffn_inp-{id}_1_f32.bin")
+        attn_dict["ffn_norm"] = load(f"ffn_norm-{id}_1_f32.bin")
+        attn_dict["ffn_out"] = load(f"ffn_out-{id}_1_f32.bin")
+        attn_dict["l_out"] = load(f"l_out-{id}_1_f32.bin")
+        return attn_dict
+
+    for id in range(hp.block_count):
+        baseline[f"attn_{id}"] = load_attention(id)
+
+    return baseline
+
+
 
 def main():
     from ..utils import cli
@@ -209,6 +245,8 @@ def main():
     parser.add_argument("prompt", nargs="+", help="Prompt strings")
     parser.add_argument("--kv-cache-type", default="paged", help="KV cache type")
     parser.add_argument("--device", help="Torch device (or default)")
+    parser.add_argument("--skip-decode", action='store_true', help="Skip the decode stage")
+    parser.add_argument("--baseline", help="Comparison folder to baseline against")
     parser.add_argument(
         "--save_intermediates_path",
         help="save module forward outputs to safetensors, ex: run_0 will save to run_0_prefill.savetensors",
@@ -228,9 +266,10 @@ def main():
     dataset = cli.get_input_dataset(args)
     tokenizer = cli.get_tokenizer(args)
     prompts = args.prompt
+    hp = configs.LlamaHParams.from_gguf_props(dataset.properties)
 
     config = LlamaModelConfig(
-        hp=configs.LlamaHParams.from_gguf_props(dataset.properties),
+        hp=hp,
         block_seq_stride=16,
         kv_cache_type=args.kv_cache_type,
         device=device,
@@ -238,10 +277,12 @@ def main():
         attention_dtype=activation_dtype,
     )
 
+    baseline = load_baseline(args.baseline, hp)
+
     if config.hp.expert_count:
-        model = PagedMixtralModelV1(dataset.root_theta, config)
+        model = PagedMixtralModelV1(dataset.root_theta, config, baseline=baseline)
     else:
-        model = PagedLlamaModelV1(dataset.root_theta, config)
+        model = PagedLlamaModelV1(dataset.root_theta, config, baseline=baseline)
     if args.save_intermediates_path:
         from ..utils.patching import SaveModuleResultTensorsPatch
 
@@ -263,14 +304,15 @@ def main():
             args.save_intermediates_path + "_prefill.safetensors"
         )
     counter = 0
-    while not batch.done:
-        batch.decode()
-        if args.save_intermediates_path:
-            intermediates_saver.save_file(
-                args.save_intermediates_path + f"_step_{counter}.safetensors"
-            )
-        print(f":: Result tokens: {batch.results}")
-        batch.print_current_results()
+    if not args.skip_decode:
+        while not batch.done:
+            batch.decode()
+            if args.save_intermediates_path:
+                intermediates_saver.save_file(
+                    args.save_intermediates_path + f"_step_{counter}.safetensors"
+                )
+            print(f":: Result tokens: {batch.results}")
+            batch.print_current_results()
 
 
 if __name__ == "__main__":

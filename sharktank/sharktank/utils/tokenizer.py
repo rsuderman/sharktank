@@ -82,7 +82,7 @@ def _create_transformers_tokenizer(model_path: os.PathLike) -> InferenceTokenize
                 padding=False,
                 truncation=False,
             )
-            return results["input_ids"]
+            return [result[1:] for result in results["input_ids"]]
 
         def _decode(self, tokens: list[list[int]]) -> list[str]:
             return t.batch_decode(tokens)

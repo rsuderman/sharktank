@@ -26,6 +26,26 @@ __all__ = [
 # Config
 ################################################################################
 
+def compare_baseline(t, name, baseline, replace=False):
+    if not baseline:
+        return t
+    shp = [int(d) for d in t.shape]
+    shp[1] = -1
+
+    t_baseline = torch.tensor(baseline[name].reshape(*shp))
+    t_cut = torch.tensor(t[:, :t_baseline.shape[1], :])
+
+    diff = torch.abs(t_cut - t_baseline)
+    diff = diff.flatten()
+
+    atol = torch.max(diff)
+    print (f"Tensor {name:<40} {atol.item():10.6f}")
+
+    # Substitute in values
+    if replace:
+        return torch.concat((t_baseline, t[:, t_baseline.shape[1]:, :]), dim=1)
+
+    return t
 
 @dataclass
 class LlamaModelConfig:
@@ -113,7 +133,7 @@ class PagedLlamaModelV1(BaseCausalLMModel):
     Various samplers and schedulers can be interleaved throughout.
     """
 
-    def __init__(self, theta: Theta, config: LlamaModelConfig):
+    def __init__(self, theta: Theta, config: LlamaModelConfig, baseline: dict = None):
         hp = config.hp
         super().__init__(
             theta,
@@ -128,6 +148,7 @@ class PagedLlamaModelV1(BaseCausalLMModel):
         self.cache = config.create_kv_cache()
         self.activation_dtype = config.activation_dtype
         self.use_hf = config.use_hf
+        self.baseline = baseline
 
         self.add_module(
             "token_embedding",
@@ -163,6 +184,7 @@ class PagedLlamaModelV1(BaseCausalLMModel):
                     head_count_kv=hp.attention_head_count_kv,
                     rms_epsilon=hp.attention_layer_norm_rms_epsilon,
                     use_hf=self.use_hf,
+                    baseline=baseline[f"attn_{n}"]
                 )
                 for n in range(hp.block_count)
             ]
@@ -186,6 +208,8 @@ class PagedLlamaModelV1(BaseCausalLMModel):
         h = self.token_embedding(tokens)
         self.trace_tensor("llama.token_embedding", h)
 
+        h = compare_baseline(h, "inp_embd", self.baseline)
+
         # Iterate over attention blocks.
         for block_idx, block in enumerate(self.attn_blocks):
             if block_idx == 0:
@@ -201,7 +225,10 @@ class PagedLlamaModelV1(BaseCausalLMModel):
             self.trace_tensor(f"llama.attn_block.{block_idx}.output", h)
 
         h = self.output_norm(h)
-        logits = self.output_lm_head(h)
+        h = compare_baseline(h, "result_norm", self.baseline)
+
+        logits = self.output_lm_head(h.to(torch.float16).to(torch.float32))
+        logits = compare_baseline(logits, "result_output", self.baseline)
         return logits
 
     def decode(
@@ -297,8 +324,11 @@ class AttentionFFNBlock(ThetaLayer):
         head_count_kv: int,
         rms_epsilon: float,
         use_hf: bool = False,
+        baseline: str = None,
     ):
         super().__init__(theta)
+        self.baseline = baseline
+        self.block_index = block_index
         self.add_module(
             "attn",
             PagedLlamaAttentionBlock(
@@ -316,6 +346,7 @@ class AttentionFFNBlock(ThetaLayer):
             "ffn",
             FFN(
                 theta=theta,
+                baseline=self.baseline
             ),
         )
         self.add_module(
@@ -349,9 +380,16 @@ class AttentionFFNBlock(ThetaLayer):
             xk_temp=xk_temp,
             xv_temp=xv_temp,
         )
+
         # Feed forward network.
+        h = compare_baseline(h, "ffn_inp", self.baseline, replace=True)
         ffn_input = self.ffn_norm(h)
+
+        ffn_input = compare_baseline(ffn_input, "ffn_norm", self.baseline, replace=True)
         ffn_down = self.ffn(ffn_input)
+
+        ffn_down = compare_baseline(ffn_down, "ffn_out", self.baseline, replace=True)
         final_output = h + ffn_down
 
+        final_output = compare_baseline(final_output, "l_out", self.baseline, replace=True)
         return final_output
