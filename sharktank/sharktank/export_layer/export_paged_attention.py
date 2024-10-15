@@ -277,7 +277,9 @@ def main():
             raise NotImplementedError(f"Unsupported KV cache type: {type(model.cache)}")
 
         dynamic_shapes = {
-            "tokens": {1: sl_dim},
+            "q": {1: sl_dim},
+            "k": {1: sl_dim},
+            "v": {1: sl_dim},
             "seq_lens": {},
             "seq_block_ids": {1: block_dim},
             "cache_state": cache_state_dynamic_shapes,
@@ -293,6 +295,7 @@ def main():
         @fxb.export_program(
             name=f"prefill_bs{bs}",
             args=example_args,
+            dynamic_shapes=dynamic_shapes,
         )
         def _(model, q, k, v, seq_lens, seq_block_ids, cache_state):
 
@@ -407,7 +410,7 @@ def main():
     print("GENERATED!")
 
     print("Exporting")
-    output = export(fxb)
+    output = export(fxb, import_symbolic_shape_expressions=True)
     print(f"Saving to '{args.output_mlir}'")
     output.save_mlir(args.output_mlir)
     json.dump(config, open(args.output_config, "w"))
