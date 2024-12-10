@@ -54,6 +54,11 @@ def main():
         help="Enables strictness during export",
         action="store_true",
     )
+    parser.add_argument(
+        "--use-queue-parallelism",
+        help="Enables using queues to parallelism",
+        action="store_true",
+    )
 
     cli.add_quantization_options(parser)
     cli.add_model_options(parser)
@@ -73,7 +78,7 @@ def main():
         tensor_parallelism_size=tensor_parallelism_size,
         use_hf=False,
         static_tables=False,  # Rely on the compiler for hoisting tables.
-        kv_cache_type="direct" if args.bs == [1] else "paged",
+        kv_cache_type="paged" if args.bs == [1] else "paged",
         attention_kernel=args.attention_kernel,
     )
     llama_config.fake_quant = args.fake_quant
@@ -130,7 +135,11 @@ def main():
                 ]
 
                 for i in range(llama_config.tensor_parallelism_size):
-                    arg_affinities[i] = DeviceAffinity(str(i))
+                    if args.use_queue_parallelism:
+                        arg_affinities[i] = DeviceAffinity(0, [str(i)])
+                    else:
+                        arg_affinities[i] = DeviceAffinity(str(i))
+                    print(arg_affinities[i])
 
             return unpacked, shard_dim, dynamic_shapes, arg_affinities
 
@@ -172,7 +181,9 @@ def main():
             arg_affinities = {key + 3: arg_affinities[key] for key in arg_affinities}
 
             for i in range(3):
-                arg_affinities[i] = DeviceAffinity("0")
+                arg_affinities[i] = DeviceAffinity(
+                    "0", [str(i) for i in range(tensor_parallelism_size)]
+                )
 
         dynamic_shapes = {
             "tokens": {1: sl_dim},
@@ -251,7 +262,9 @@ def main():
 
             # Inputs have default affinity 0
             for i in range(4):
-                arg_affinities[i] = DeviceAffinity("0")
+                arg_affinities[i] = DeviceAffinity(
+                    "0", [str(i) for i in range(llama_config.tensor_parallelism_size)]
+                )
 
         dynamic_shapes = {
             "tokens": {},

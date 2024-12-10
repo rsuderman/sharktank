@@ -41,10 +41,7 @@ def all_gather_split(
     # concatenations into one and then copy to all devices, which is not what we want.
     shards = [
         cat(
-            [
-                shard if i == j else transfer_to_logical_device(shard, i)
-                for j, shard in enumerate(input.shards)
-            ],
+            [shard if i == j else shard for j, shard in enumerate(input.shards)],
             dim=dim,
         )
         for i in range(input.shard_count)
@@ -62,10 +59,7 @@ def all_reduce_split_or_unreduced(
     shards = [
         functools.reduce(
             lambda x, y: elementwise(torch.add, x, y),
-            [
-                shard if i == j else transfer_to_logical_device(shard, i)
-                for j, shard in enumerate(input.shards)
-            ],
+            [shard if i == j else shard for j, shard in enumerate(input.shards)],
         )
         for i in range(input.shard_count)
     ]
@@ -905,7 +899,7 @@ def replicate_unreduced(input: UnreducedTensor, *, count: int) -> ReplicatedTens
 def replicate_unsharded(input, *, count: int) -> ReplicatedTensor:
     torch_input = unbox_tensor(input)
     # If we have a torch input replicating we can assume we need to transfer:
-    torch_inputs = [transfer_to_logical_device(torch_input, i) for i in range(count)]
+    torch_inputs = [torch_input for i in range(count)]
     return ReplicatedTensor(ts=torch_inputs)
 
 
@@ -1084,10 +1078,7 @@ def reshard_like_unreduced_to_replicated(
 
 @sharded_cat.override(SplitPrimitiveTensor)
 def sharded_cat_unsharded(tensor: SplitPrimitiveTensor):
-    shard_ts = [
-        transfer_to_logical_device(shard.as_torch(), 0) if i != 0 else shard.as_torch()
-        for i, shard in enumerate(tensor.shards)
-    ]
+    shard_ts = [shard.as_torch() for i, shard in enumerate(tensor.shards)]
     return torch.cat(shard_ts, dim=tensor.shard_dim)
 
 
@@ -1176,10 +1167,7 @@ def unshard_split(input: SplitPrimitiveTensor) -> Tensor:
 @unshard.override(UnreducedTensor)
 def unshard_unreduced(input: UnreducedTensor) -> Tensor:
     shards = input.shards
-    shards = [
-        shard if i == 0 else transfer_to_logical_device(shard, 0)
-        for i, shard in enumerate(shards)
-    ]
+    shards = [shard if i == 0 else shard for i, shard in enumerate(shards)]
     return functools.reduce(lambda x, y: elementwise(torch.add, x, y), shards)
 
 

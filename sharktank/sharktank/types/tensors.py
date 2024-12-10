@@ -872,7 +872,7 @@ class ShardedTensorBase(ShardedTensor):
                 t = raw_tensors[t_name]
                 ts.append(t)
                 # TODO: this should be changed to tracked device affinity
-                DeviceTensorTrait(i).set(t)
+                DeviceTensorTrait(0, [str(i)]).set(t)
             except KeyError as e:
                 raise IOError(
                     f"Missing component tensor '{t_name}' in {raw_tensors.keys()}"
@@ -978,7 +978,7 @@ class SplitPrimitiveTensor(ShardedTensorBase):
 
             assert shard_count is not None
             ts = ts.split(ceildiv(ts.shape[shard_dim], shard_count), dim=shard_dim)
-            ts = [transfer_to_logical_device(t, i) for i, t in enumerate(ts)]
+            ts = [t for i, t in enumerate(ts)]
             assert len(ts) == shard_count
             shard_count = None
 
@@ -1112,7 +1112,7 @@ class ReplicatedTensor(ShardedTensor):
             assert shard_count is not None
             from ..ops import transfer_to_logical_device
 
-            ts = [transfer_to_logical_device(ts, i) for i in range(shard_count)]
+            ts = [ts for i in range(shard_count)]
             shard_count = None
 
         assert shard_count is None
@@ -1190,7 +1190,7 @@ class ReplicatedTensor(ShardedTensor):
 
             # TODO This should be changed to assigned affinities
             for i in range(shard_count):
-                DeviceTensorTrait(i).set(ts[i])
+                DeviceTensorTrait(0, [str(i)]).set(ts[i])
 
         except KeyError as e:
             raise IOError(f"Missing component tensor '' in {raw_tensors.keys()}") from e
