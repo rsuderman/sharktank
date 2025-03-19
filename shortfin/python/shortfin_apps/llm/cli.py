@@ -75,6 +75,12 @@ def add_service_args(parser):
         help="Concurrency control -- How to isolate programs.",
     )
     parser.add_argument(
+        "--instances",
+        type=int,
+        default=1,
+        help="Number of overlapping instances to run",
+    )
+    parser.add_argument(
         "--server_config",
         type=Path,
         help="Path to server configuration file",
@@ -184,8 +190,11 @@ async def main(argv):
 
     logger.info(msg="Setting up service", level=logging.INFO)
     lifecycle_manager = ShortfinLlmLifecycleManager(args)
-    service = lifecycle_manager.services["default"]
-    service.start()
+    services = []
+    for name in lifecycle_manager.services:
+        service = lifecycle_manager.services[name]
+        service.start()
+        services.append(service)
 
     sampling_params = {"max_completion_tokens": args.decode_steps}
 
@@ -207,9 +216,10 @@ async def main(argv):
         tasks.append(task)
         queue.put_nowait(task)
 
-    async def worker(name, queue):
+    async def worker(name, queue, service):
         while True:
             task = await queue.get()
+            print(f"Running {name} on {service.name}")
             responder = CliResponder()
             gen_req = GenerateReqInput(
                 text=task.prompt, sampling_params=sampling_params
@@ -225,9 +235,10 @@ async def main(argv):
 
     logger.log(msg=f"Setting up {args.workers} workers", level=logging.INFO)
     workers = []
-    for i in range(args.workers):
-        w = asyncio.create_task(worker(f"worker-{i}", queue))
-        workers.append(w)
+    for service in services:
+        for i in range(args.workers):
+            w = asyncio.create_task(worker(f"{service.name}-worker-{i}", queue, service))
+            workers.append(w)
 
     logger.log(msg=f"Processing tasks", level=logging.INFO)
     await queue.join()

@@ -69,18 +69,21 @@ class ShortfinLlmLifecycleManager:
             args.tokenizer_json, eos_token=eos_token
         )
         model_params = ModelParams.load_json(args.model_config)
-        service = LlmGenerateService(
-            name="default",
-            sysman=sysman,
-            tokenizer=tokenizer,
-            model_params=model_params,
-            server_params=server_params,
-            program_isolation=server_params.program_isolation,
-        )
-        service.load_inference_module(args.vmfb)
-        service.load_inference_parameters(*args.parameters, parameter_scope="model")
-        self.sysman = sysman
-        self.services = {"default": service}
+        self.services = {}
+        for i in range(args.instances):
+            name = "default" if args.instances == 1  else f"instance-{i}"
+            service = LlmGenerateService(
+                name=name,
+                sysman=sysman,
+                tokenizer=tokenizer,
+                model_params=model_params,
+                server_params=server_params,
+                program_isolation=server_params.program_isolation,
+            )
+            service.load_inference_module(args.vmfb)
+            service.load_inference_parameters(*args.parameters, parameter_scope="model")
+            self.sysman = sysman
+            self.services[name] = service
 
     def __enter__(self):
         self.sysman.start()
