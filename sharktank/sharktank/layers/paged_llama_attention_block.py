@@ -205,6 +205,8 @@ class PagedLlamaAttentionBlock(ThetaLayer):
         attention_mask: Optional[torch.Tensor | ReplicatedTensor] = None,
         embedding_batch_mask: Optional[torch.Tensor] = None,
         cache_state: list[torch.Tensor] = None,
+        seq_lens: Optional[torch.Tensor | ReplicatedTensor] = None,
+        return_final: bool = False,
     ):
         assert bool(start_index is not None) ^ bool(embedding_batch_mask is not None)
 
@@ -276,6 +278,17 @@ class PagedLlamaAttentionBlock(ThetaLayer):
 
         # Project.
         attn_output = self.attn_output(attn_output)
+
+        if return_final:
+            last_seq_lens = seq_lens
+            bsi = torch.tensor(list(range(xq.shape[0])))
+
+            attn_output = attn_output[bsi, last_seq_lens - 1]
+            attn_output = attn_output.unsqueeze(1)
+
+            h = h[bsi, last_seq_lens - 1]
+            h = h.unsqueeze(1)
+
         attn_output = self.attn_output_norm(attn_output)
 
         h = h + attn_output

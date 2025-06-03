@@ -175,6 +175,7 @@ class PagedLlmModelV1(BaseCausalLMModel):
         # [bs, batch_seq_len // block_seq_stride]
         seq_block_ids: list[Union[torch.Tensor, ReplicatedTensor]],
         cache_state: list[Union[torch.Tensor, SplitPrimitiveTensor]],
+        seq_lens: list[Union[torch.Tensor, ReplicatedTensor]],
     ):
         self._assert_device(tokens)
         if not all(mask is None for mask in attention_mask):
@@ -212,6 +213,7 @@ class PagedLlmModelV1(BaseCausalLMModel):
             else:
                 mask = attention_mask
             pipeline = self.cache.block_to_pipeline_map[block_idx]
+            last_block = block_idx == (self.hp.block_count - 1)
             h = block(
                 h,
                 embedding=self.attention_embedding[pipeline],
@@ -219,6 +221,8 @@ class PagedLlmModelV1(BaseCausalLMModel):
                 attention_mask=mask[pipeline],
                 cache_state=cache_state,
                 seq_block_ids=seq_block_ids[pipeline],
+                seq_lens=seq_lens,
+                return_final=last_block,
             )
             h = self._inter_layer_callback(h, block_idx)
             self.trace_tensor(f"llama.attn_block.{block_idx}.output", h)
@@ -447,6 +451,8 @@ class AttentionFFNBlock(ThetaLayer):
         attention_mask: list[Union[torch.Tensor, ReplicatedTensor]] = None,
         embedding_batch_mask: Optional[torch.Tensor] = None,
         cache_state: list[torch.Tensor] = None,
+        seq_lens: list[torch.Tensor, ReplicatedTensor] = None,
+        return_final: bool = False,
     ):
         h = self.attn(
             h,
@@ -457,6 +463,8 @@ class AttentionFFNBlock(ThetaLayer):
             attention_mask=attention_mask,
             embedding_batch_mask=embedding_batch_mask,
             cache_state=cache_state,
+            seq_lens=seq_lens,
+            return_final=return_final,
         )
 
         # Feed forward network.
