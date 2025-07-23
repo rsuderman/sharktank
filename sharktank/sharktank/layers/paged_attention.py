@@ -282,7 +282,8 @@ class KVCache:
         state: List[torch.Tensor],
         cache_partitions: List[torch.Tensor],
         transformer_block_index: int,
-        page_ids: Union[torch.Tensor, ReplicatedTensor],
+        page_ids: torch.Tensor,
+        start_positions: Union[torch.Tensor, None],
     ):
         """Writes cache partitions from a linear layout to the page table.
 
@@ -295,7 +296,15 @@ class KVCache:
         page_table = self.unflatten_page_table(state=state)[0]
         page_table = page_table.flatten(0, 2)
 
-        _, block_seq_len, *_ = page_ids.shape
+        block_seq_len = cache_partitions[0].shape[1] // self.block_seq_stride
+
+        if start_positions is not None:
+            page_index = (
+                start_positions.unsqueeze(1) // self.block_seq_stride
+            ) + torch.arange(block_seq_len)
+            page_index = page_index
+            page_ids = torch.gather(page_ids, dim=1, index=page_index)
+
         for cache_partition_id, cache_partition in enumerate(cache_partitions):
             index = page_ids
             index = index * self.transformer_block_count + transformer_block_index
@@ -349,76 +358,6 @@ class KVCache:
 
             cache_partition.transpose(1, 2)
             values = ops.to(cache_partition, dtype=page_table.dtype)
-            ops.index_put_(page_table, indices=(index,), values=values)
-
-    def write_range(
-        self,
-        *,
-        state: List[torch.Tensor],
-        cache_partitions: List[torch.Tensor],
-        transformer_block_index: int,
-        seq_positions: torch.Tensor,
-        page_ids: Union[torch.Tensor, ReplicatedTensor],
-    ):
-        """Writes a range of cache partitions to the page table.
-        Similar function to `write_timestep`, but generalized for writing
-        cache partitions with seq_len > 1.
-        Args:
-            state (List[torch.Tensor]): Current state of the KV cache allocation.
-            cache_partitions (List[torch.Tensor]): K and V cache partitions.
-            transformer_block_index (int): Transformer block index to write to.
-            seq_positions (torch.Tensor): Positions denoting the starting index to write for a given sequence.
-            page_ids (Union[torch.Tensor, ReplicatedTensor]): Page IDs to write to.
-        """
-        assert len(state) == 1
-        assert len(cache_partitions) == self.cache_partition_count
-
-        page_table = self.unflatten_page_table(state)[0]
-        page_table = page_table.flatten(0, 4)
-
-        device = self.device
-        bs, seq_len, *_ = cache_partitions[0].shape
-
-        if seq_len == 0:
-            # If the sequence length is 0, we don't need to write anything.
-            return
-
-        positions = torch.arange(seq_len, device=device, dtype=torch.int64).unsqueeze(
-            0
-        ) + seq_positions.unsqueeze(
-            1
-        )  # [bs, seq_len]
-
-        # Compute the logical page indices from `seq_positions`
-        logical_page_index = positions // self.block_seq_stride  # [bs, seq_len]
-
-        # Obtain the real page ids from the page table.
-        real_page_ids = ops.gather(page_ids, dim=1, index=logical_page_index).view(
-            bs, seq_len, 1
-        )
-
-        # Compute the page offsets within the block sequence stride.
-        page_offset = (positions % self.block_seq_stride).view(bs, seq_len, 1)
-
-        # Compute the head offsets.
-        head_offset = torch.arange(self.attn_head_count, device=device).view(
-            (1, 1, self.attn_head_count)
-        )
-
-        # Loop over the cache partitions and write them to the page table.
-        for cache_partition_id, cache_partition in enumerate(cache_partitions):
-            partitions = torch.tensor(cache_partition_id, device=device).view(1, 1, 1)
-
-            # Compute the flat index for the page table.
-            index = real_page_ids
-            index = index * self.transformer_block_count + transformer_block_index
-            index = index * self.cache_partition_count + partitions
-            index = index * self.attn_head_count + head_offset
-            index = index * self.block_seq_stride + page_offset
-
-            # Prepare the values to write.
-            values = ops.to(cache_partition, dtype=page_table.dtype)
-
             ops.index_put_(page_table, indices=(index,), values=values)
 
 
@@ -553,7 +492,8 @@ class ShardedCache:
         state: List[SplitPrimitiveTensor],
         cache_partitions: List[SplitPrimitiveTensor],
         transformer_block_index: int,
-        page_ids: Union[ReplicatedTensor],
+        page_ids: ReplicatedTensor,
+        start_positions: ReplicatedTensor | None,
     ):
         assert len(state) == 1
         assert state[0].shard_count == self.shard_count
@@ -564,7 +504,6 @@ class ShardedCache:
         for device in state[0].devices:
             assert device in page_ids.devices
 
-        shards = []
         for i in range(self.shard_count):
             cache_partition_shards = [p.shards[i] for p in cache_partitions]
             self.caches[i].write(
@@ -572,6 +511,7 @@ class ShardedCache:
                 cache_partitions=cache_partition_shards,
                 transformer_block_index=transformer_block_index,
                 page_ids=page_ids.shards[i],
+                start_positions=start_positions.shards[i],
             )
 
     def write_timestep(
@@ -590,28 +530,6 @@ class ShardedCache:
         for i in range(self.shard_count):
             cache_partition_shards = [p.shards[i] for p in cache_partitions]
             self.caches[i].write_timestep(
-                state=[state[0].shards[i]],
-                cache_partitions=cache_partition_shards,
-                transformer_block_index=transformer_block_index,
-                seq_positions=seq_positions.shards[i],
-                page_ids=page_ids.shards[i],
-            )
-
-    def write_range(
-        self,
-        *,
-        state: List[SplitPrimitiveTensor],
-        cache_partitions: List[SplitPrimitiveTensor],
-        transformer_block_index: int,
-        seq_positions: SplitPrimitiveTensor,
-        page_ids: ReplicatedTensor,
-    ):
-        assert len(state) == 1
-        assert state[0].shard_count == self.shard_count
-
-        for i in range(self.shard_count):
-            cache_partition_shards = [p.shards[i] for p in cache_partitions]
-            self.caches[i].write_range(
                 state=[state[0].shards[i]],
                 cache_partitions=cache_partition_shards,
                 transformer_block_index=transformer_block_index,
@@ -819,6 +737,7 @@ class PipelinedCache:
         cache_partitions: List[SplitPrimitiveTensor],
         transformer_block_index: int,
         page_ids: torch.Tensor | ReplicatedTensor,
+        start_positions: torch.Tensor | ReplicatedTensor | None,
     ):
         pipeline = self.block_to_pipeline_map[transformer_block_index]
         block = self.transformer_block_map[transformer_block_index]
@@ -839,6 +758,7 @@ class PipelinedCache:
             cache_partitions=cache_partitions,
             transformer_block_index=block,
             page_ids=page_ids,
+            start_positions=start_positions,
         )
 
     def write_timestep(
@@ -871,38 +791,6 @@ class PipelinedCache:
             transformer_block_index=block,
             page_ids=page_ids,
             seq_positions=seq_positions,
-        )
-
-    def write_range(
-        self,
-        *,
-        state: List[ReplicatedTensor | SplitPrimitiveTensor],
-        cache_partitions: List[SplitPrimitiveTensor],
-        transformer_block_index: int,
-        seq_positions: SplitPrimitiveTensor,
-        page_ids: ReplicatedTensor,
-    ):
-        pipeline = self.block_to_pipeline_map[transformer_block_index]
-        block = self.transformer_block_map[transformer_block_index]
-
-        # Select the right pipeline:
-        pipeline_state = [state[pipeline]]
-
-        # Remove pipelining from the args:
-        page_ids = self.unwrap_like(page_ids, pipeline_state)
-
-        # If device pipelined we need to unwrap:
-        pipeline_state = self.unwrap_pipelining(pipeline_state)
-        page_ids = self.unwrap_pipelining(page_ids)
-        cache_partitions = self.unwrap_pipelining(cache_partitions)
-        seq_positions = self.unwrap_pipelining(seq_positions)
-
-        return self.caches[pipeline].write_range(
-            state=pipeline_state,
-            cache_partitions=cache_partitions,
-            transformer_block_index=block,
-            seq_positions=seq_positions,
-            page_ids=page_ids,
         )
 
 
@@ -1073,22 +961,6 @@ class PagedAttention:
             page_ids=page_ids,
         )
 
-    def write_range(
-        self,
-        state: List[torch.Tensor | SplitPrimitiveTensor | ReplicatedTensor],
-        cache_partitions: List[torch.Tensor | SplitPrimitiveTensor | ReplicatedTensor],
-        transformer_block_index: int,
-        seq_positions: Optional[torch.Tensor],
-        page_ids: Union[torch.Tensor, ReplicatedTensor],
-    ):
-        self.kv_cache.write_range(
-            state=state,
-            cache_partitions=cache_partitions,
-            transformer_block_index=transformer_block_index,
-            seq_positions=seq_positions,
-            page_ids=page_ids,
-        )
-
     def write(
         self,
         state: List[torch.Tensor | SplitPrimitiveTensor | ReplicatedTensor],
@@ -1096,12 +968,14 @@ class PagedAttention:
         *,
         transformer_block_index: int,
         page_ids: Union[torch.Tensor, ReplicatedTensor],
+        start_positions: Union[torch.Tensor, ReplicatedTensor, None],
     ):
         self.kv_cache.write(
             state=state,
             cache_partitions=cache_partitions,
             transformer_block_index=transformer_block_index,
             page_ids=page_ids,
+            start_positions=start_positions,
         )
 
     def repeat_kv(self, x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -1268,19 +1142,34 @@ class PagedAttention:
         cache_state: List[torch.Tensor],
         seq_block_ids: torch.Tensor,
         block_index: int,
+        start_positions: torch.Tensor,
         attention_kernel: str,
         head_count_attn: int,
         fake_quant: Optional[bool],
         softcap: Optional[float] = None,
         scale: Optional[float] = None,
         mask: Optional[torch.Tensor] = None,
+        k_quantizer: StaticScaledQuantizer = None,
+        v_quantizer: StaticScaledQuantizer = None,
     ):
         self.write(
             cache_state,
             cache_partitions=[unpack_to_raw_tensor(k), unpack_to_raw_tensor(v)],
             transformer_block_index=block_index,
+            start_positions=start_positions,
             page_ids=seq_block_ids,
         )
+
+        if start_positions is not None:
+            # Restore from the cache.
+            k, v = self.read(
+                cache_state,
+                transformer_block_index=block_index,
+                page_ids=seq_block_ids,
+            )
+
+            k = pack_raw_tensor(k, k_quantizer)
+            v = pack_raw_tensor(v, v_quantizer)
 
         return self.attention(
             q=q,
